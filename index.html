@@ -1,0 +1,1002 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>사막 경매 · 다이아몬드-물의 역설</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  html,body{ -webkit-tap-highlight-color:transparent; }
+  .hpbar{ transition:width .4s ease; }
+  .pulse-ring{ animation:pulse 1s infinite; }
+  @keyframes pulse{ 0%{transform:scale(1)} 50%{transform:scale(1.06)} 100%{transform:scale(1)} }
+  .flash{ animation:flash 1s infinite; }
+  @keyframes flash{ 0%,100%{opacity:1} 50%{opacity:.4} }
+  .pop{ animation:pop .4s ease; }
+  @keyframes pop{ 0%{transform:scale(.7);opacity:0} 100%{transform:scale(1);opacity:1} }
+  .bidbtn:active,.actbtn:active{ transform:scale(.94); }
+  #dayflash{ position:fixed; inset:0; z-index:60; display:flex; align-items:center; justify-content:center; pointer-events:none !important; background:rgba(0,0,0,.55); }
+  .df-hit{ animation:dfhit 2.0s ease forwards; pointer-events:none !important; }
+  @keyframes dfhit{ 0%{opacity:0;transform:scale(.6)} 12%{opacity:1;transform:scale(1)} 78%{opacity:1;transform:scale(1)} 100%{opacity:0;transform:scale(1.12)} }
+  .redveil,.greenveil{ position:fixed; inset:0; z-index:59; pointer-events:none !important; }
+  .greenveil.on{ animation:gveil 1.2s ease forwards; }
+  @keyframes gveil{ 0%{background:rgba(16,185,129,0)} 25%{background:rgba(16,185,129,.4)} 100%{background:rgba(16,185,129,0)} }
+  .redveil.on{ animation:veil 1.2s ease forwards; }
+  @keyframes veil{ 0%{background:rgba(220,38,38,0)} 25%{background:rgba(220,38,38,.5)} 100%{background:rgba(220,38,38,0)} }
+  .hpflash{ animation:hpf .8s ease; }
+  @keyframes hpf{ 0%,100%{box-shadow:0 0 0 rgba(239,68,68,0)} 40%{box-shadow:0 0 0 6px rgba(239,68,68,.7)} }
+</style>
+</head>
+<body class="bg-slate-900 text-white min-h-screen font-sans select-none">
+
+<section id="screen-start" class="fixed inset-0 flex flex-col items-center justify-center p-6 bg-gradient-to-b from-slate-900 to-slate-800 z-10">
+  <div class="text-6xl mb-2">🏜️💎💧</div>
+  <h1 class="text-3xl md:text-4xl font-black mb-1 text-center">사막의 경매</h1>
+  <p class="text-slate-400 mb-8 text-center">비축 · 투기 · 생존 — 다이아몬드–물의 역설</p>
+  <div class="w-full max-w-sm bg-slate-800/70 rounded-2xl p-5 mb-4 border border-slate-700">
+    <h2 class="font-bold mb-3 text-lg">📱 학생 참가</h2>
+    <input id="in-code" inputmode="numeric" maxlength="4" placeholder="4자리 룸 코드"
+      class="w-full mb-2 px-4 py-3 rounded-xl bg-slate-900 text-center text-2xl tracking-[0.4em] font-bold outline-none border border-slate-600 focus:border-cyan-400" />
+    <input id="in-name" maxlength="8" placeholder="이름 / 닉네임 (예: 홍길동)"
+      class="w-full mb-3 px-4 py-3 rounded-xl bg-slate-900 text-center text-lg outline-none border border-slate-600 focus:border-cyan-400" />
+    <button id="btn-join" onclick="joinAsClient()" class="w-full py-3 rounded-xl bg-cyan-500 hover:bg-cyan-400 font-bold text-lg cursor-pointer">참가하기</button>
+  </div>
+  <button id="btn-host" onclick="startAsHost()" class="w-full max-w-sm py-3 rounded-xl bg-slate-700 hover:bg-slate-600 font-bold border border-slate-600 cursor-pointer">
+    🖥️ 선생님 · 방 만들기 (빔프로젝터)
+  </button>
+</section>
+
+<section id="view-host" class="hidden min-h-screen"></section>
+<section id="view-client" class="hidden min-h-screen max-w-md mx-auto"></section>
+
+<script>
+const firebaseConfig = {
+  apiKey: "AIzaSyBQ8WFqbHyeM07W2hRxapDSJBrguhHR2k8",
+  authDomain: "economics-e92b5.firebaseapp.com",
+  databaseURL: "https://economics-e92b5-default-rtdb.firebaseio.com",
+  projectId: "economics-e92b5",
+  storageBucket: "economics-e92b5.firebasestorage.app",
+  messagingSenderId: "886360086739",
+  appId: "1:886360086739:web:2a965bb3af3a0edff81c26"
+};
+
+let db = null, serverOffset = 0;
+try {
+  if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
+  db = firebase.database();
+  db.ref('.info/serverTimeOffset').on('value', snap => {
+    serverOffset = snap.val() || 0;
+  });
+} catch(e) {
+  console.error(e);
+}
+
+function now() {
+  return Date.now() + (serverOffset || 0);
+}
+
+let role = null, roomCode = null, roomRef = null, myKey = null, state = null, finalizing = false, lastFlashId = 0;
+let lastEvId = 0, lastSoldKey = '';
+let lastFlashEvId = 0;
+let lastEventLotIndex = -2;
+let chartInstance = null;
+const pick = a => a[Math.floor(Math.random() * a.length)];
+
+const INIT_GOLD = 1000, INIT_HP = 100, MAX_HP = 100, MAX_ROUND = 10, WATER_HEAL = 45, INIT_WATER = 1;
+
+const STAGE_THEME = {
+  1: { label: "오아시스", grad: "from-emerald-500 to-cyan-600", emoji: "🌴", weather: "🌴", color: "text-emerald-300" },
+  2: { label: "가뭄·대상", grad: "from-amber-500 to-orange-600", emoji: "🐪", weather: "🐪", color: "text-amber-300" },
+  3: { label: "모래폭풍", grad: "from-red-600 to-rose-800",     emoji: "🌪️", weather: "🌪️", color: "text-red-300" }
+};
+
+const STAGE_GUIDE = {
+  1: { txt: "🟢 오아시스! 물이 풍족하고 쌉니다. 다이아몬드를 적극 매수하세요!", bg: "bg-emerald-600/80" },
+  2: { txt: "🟡 대상(隊商) 도착! 다이아 시세 폭등 — 지금 [💎팔기]로 큰돈을 버세요!", bg: "bg-amber-600/80" },
+  3: { txt: "🔴 모래폭풍! 물이 곧 목숨입니다. 다이아는 헐값이고 물값이 폭등합니다!", bg: "bg-red-600/80" },
+};
+
+const ITEM = {
+  water:   { name: "식수",   icon: "💧", type: "consume", heal: WATER_HEAL, desc: `마셔서 HP +${WATER_HEAL} (생존 필수재)` },
+  diamond: { name: "다이아", icon: "💎", type: "luxury",               desc: "사치품 · 대상이 올 때 비싸게 처분 가능" },
+};
+
+const MARKET = { 1: 250, 2: 750, 3: 15 };
+const STAGE_WATER_BASE = { 1: 5, 2: 40, 3: 100 };
+const BASE_THIRST = { 1: 15, 2: 25, 3: 35 };
+
+/* 10일 전일 다이아몬드 & 식수 밸런스 */
+const ROUND_PLAN = [
+  { stage: 1, lots: [{k:'diamond',c:1,s:150},{k:'water',c:1,s:5},{k:'diamond',c:1,s:150},{k:'water',c:2,s:10}], guide: "🌴 Day 1: 기본 물 1병 보유 중! 물 사지 말고 다이아몬드에 집중 투자하세요!" },
+  { stage: 3, lots: [{k:'water',c:1,s:80},{k:'diamond',c:1,s:60},{k:'water',c:2,s:160}], guide: "🌪️ Day 2: 기습 모래폭풍! 갈증 급증 — 기본 물을 마셔 체력을 지키세요!" },
+  { stage: 2, caravan: true, lots: [{k:'diamond',c:1,s:80},{k:'water',c:2,s:80},{k:'water',c:2,s:80}], guide: "🐪 Day 3: 대상 도착! 모아둔 다이아를 [💎팔기]로 750G에 비싸게 환전하세요!" },
+  { stage: 1, lots: [{k:'diamond',c:1,s:150},{k:'water',c:2,s:20},{k:'diamond',c:1,s:150},{k:'water',c:1,s:10}], guide: "🌴 Day 4: 오아시스 휴식. 다이아 2차 매수 및 다음 폭풍 대비" },
+  { stage: 2, caravan: true, lots: [{k:'diamond',c:1,s:80},{k:'water',c:2,s:80},{k:'water',c:2,s:80}], guide: "🐪 Day 5: 2차 대상 도착! 남은 다이아 처분 찬스!" },
+  { stage: 3, lots: [{k:'water',c:1,s:100},{k:'diamond',c:1,s:30},{k:'water',c:2,s:200}], guide: "🌪️ Day 6: 본격 모래폭풍! 물이 급격히 부족해집니다!" },
+  { stage: 1, lots: [{k:'diamond',c:1,s:150},{k:'water',c:2,s:20},{k:'diamond',c:1,s:150},{k:'water',c:2,s:20}], guide: "🌴 Day 7: 폭풍 후 오아시스! 물을 확보해 체력을 충전하세요" },
+  { stage: 2, caravan: true, lots: [{k:'diamond',c:1,s:80},{k:'water',c:2,s:80},{k:'water',c:2,s:80}], guide: "🐪 Day 8: 마지막 대상! 다이아몬드 최종 정리" },
+  { stage: 3, lots: [{k:'water',c:1,s:100},{k:'diamond',c:1,s:15},{k:'water',c:2,s:200}], guide: "🌪️ Day 9: 대폭풍 시작! 물 한 병이 생과 사를 가릅니다!" },
+  { stage: 3, lots: [{k:'water',c:1,s:100},{k:'diamond',c:1,s:15},{k:'water',c:2,s:200}], guide: "🌪️ Day 10: 최후의 폭풍! 끝까지 살아남아 우승하세요!" },
+];
+
+const DAY_NARR = {
+  1: "평화로운 오아시스입니다. 기본 물이 있으니 다이아몬드를 저렴하게 사 모으세요.",
+  2: "기습적인 모래폭풍이 닥쳤습니다! 물의 소중함을 깨달으세요.",
+  3: "낙타 대상이 도착했습니다! 다이아몬드를 750G에 비싸게 처분하세요.",
+  4: "다음 여정을 대비하며 다이아와 물을 균형 있게 챙기세요.",
+  5: "대상이 다시 왔습니다 — 다이아를 정리할 최적의 타이밍입니다.",
+  6: "거대한 모래폭풍이 닥쳤습니다! 물 공급이 급감합니다.",
+  7: "폭풍이 잠시 잦아들었습니다. 남은 물을 꼭 챙기세요.",
+  8: "마지막 대상입니다! 남은 다이아몬드를 모두 처분하세요.",
+  9: "다시 맹렬한 모래폭풍 — 생존이 최우선입니다.",
+  10: "최후의 결전. 끝까지 살아남아 최고의 부자가 되세요!",
+};
+
+const EVENTS_STAGE1 = [
+  { icon:'☀️', text:'뜨거운 햇볕', kind:'all_hp',   amt:-8,  title:'따가운 햇볕!',    sub:'모두 땀을 흘려 탈수' },
+  { icon:'🦂', text:'풀숲 전갈',   kind:'rand_hp',  amt:-12, title:'전갈 습격!',       sub:'풀숲에서 쏘여 체력 감소' },
+  { icon:'🌵', text:'가시덤불',   kind:'rand_hp',  amt:-10, title:'가시덤불!',       sub:'발목을 긁혀 상처' },
+  { icon:'🪤', text:'소지품 분실', kind:'rand_gold',amt:-80, title:'소매치기!',       sub:'금화를 분실했다' },
+  { icon:'🎁', text:'상인의 선물', kind:'all_gold', amt:60,  title:'여행자의 선물!',  sub:'모두 금화를 받았다' },
+  { icon:'💰', text:'보물 상자',   kind:'rand_gold',amt:120, title:'묻혀있던 보물!',  sub:'금화를 얻었다' },
+];
+
+const EVENTS_STAGE2 = [
+  { icon:'🔥', text:'사막 폭염',   kind:'all_hp',   amt:-10, title:'사막의 폭염!',    sub:'모두 갈증 심화' },
+  { icon:'🐍', text:'방울뱀',     kind:'rand_hp',  amt:-14, title:'방울뱀 출몰!',    sub:'물려서 체력 감소' },
+  { icon:'💰', text:'고대 유물',   kind:'rand_gold',amt:150, title:'고대 유물 발견!',  sub:'금화를 얻었다' },
+  { icon:'💸', text:'길잡이 비용', kind:'all_gold', amt:-50, title:'사막 길잡이 비용', sub:'금화를 지불했다' },
+  { icon:'🎲', text:'상단 야바위', kind:'rand_gold',amt:-80, title:'상단 사기 도박!', sub:'돈을 잃었다' },
+  { icon:'🏝️', text:'숨은 샘',     kind:'all_hp',   amt:12,  title:'숨은 샘물!',      sub:'모두 목을 축였다' },
+];
+
+const EVENTS_STAGE3 = [
+  { icon:'🌪️', text:'모래 강풍',   kind:'all_hp',   amt:-12, title:'살인적인 강풍!',  sub:'모두 큰 탈수 피해' },
+  { icon:'🌡️', text:'열사병',      kind:'rand_hp',  amt:-16, title:'열사병 발생!',    sub:'한 명이 쓰러진다' },
+  { icon:'🏝️', text:'기적의 샘',   kind:'all_hp',   amt:15,  title:'기적의 오아시스!',sub:'폭풍 속 기적의 샘물' },
+  { icon:'🌙', text:'혹한의 밤',   kind:'all_hp',   amt:-10, title:'폭풍 속 혹한!',   sub:'체온 급격 저하' },
+  { icon:'⛑️', text:'구조대',      kind:'rand_hp',  amt:30,  title:'기적의 구조대!',  sub:'응급 치료를 받았다' },
+  { icon:'🪤', text:'모래 도둑',   kind:'rand_gold',amt:-120,title:'폭풍 속 도둑!',    sub:'금화를 빼앗겼다' },
+];
+
+function rollEventForStage(stage, prob, hasAllHpHappenedToday){
+  if(Math.random()>=prob) return null;
+  let pool = (stage===1?EVENTS_STAGE1:(stage===2?EVENTS_STAGE2:EVENTS_STAGE3));
+  if(hasAllHpHappenedToday){
+    pool = pool.filter(e => e.kind !== 'all_hp' || e.amt > 0);
+  }
+  return pick(pool);
+}
+
+function applyEventToPlayers(ev, playersMap){
+  let text='', flash=null;
+  const unit=(ev.kind.indexOf('hp')>=0)?'HP':'G';
+  const dir=ev.amt>=0?'+':'−', mag=Math.abs(ev.amt);
+  const aliveEntries=Object.entries(playersMap).filter(([k,p])=>p.alive);
+
+  if(ev.kind==='all_hp'||ev.kind==='all_gold'){
+    aliveEntries.forEach(([k,p])=>{
+      if(unit==='HP'){
+        p.hp=Math.max(0,Math.min(MAX_HP,(p.hp||0)+ev.amt));
+        if(p.hp<=0) p.alive=false;
+      } else {
+        p.gold=Math.max(0,(p.gold||0)+ev.amt);
+      }
+    });
+    text=ev.text+' (전체)';
+    flash={ icon:ev.icon, title:ev.title, sub:ev.sub, all:true, dir, mag, unit, name:'전원' };
+  } else if(aliveEntries.length){
+    const [k,p]=pick(aliveEntries);
+    if(unit==='HP'){
+      p.hp=Math.max(0,Math.min(MAX_HP,(p.hp||0)+ev.amt));
+      if(p.hp<=0) p.alive=false;
+    } else {
+      p.gold=Math.max(0,(p.gold||0)+ev.amt);
+    }
+    text=ev.text+' → '+p.name;
+    flash={ icon:ev.icon, title:ev.title, sub:ev.sub, targetKey:k, dir, mag, unit, name:p.name };
+  }
+  return { text, flash };
+}
+
+function computeAdaptive(pObj, stage, round){
+  const arr=pObj?Object.values(pObj):[];
+  const alive=arr.filter(p=>p.alive);
+  const total=arr.length||1, n=alive.length||1;
+  const avgHP=alive.reduce((s,p)=>s+(p.hp||0),0)/n;
+  const aliveRatio=alive.length/total;
+
+  let thirst = (round === 1) ? 0 : BASE_THIRST[stage];
+  let waterMul=1, mode='표준', desc='표준 상태', color='bg-slate-600/70';
+
+  if(round >= 5){
+    if(aliveRatio < 0.7 || avgHP < 40){
+      thirst=Math.max(6, Math.round(thirst * 0.65));
+      waterMul=0.7;
+      mode='🟢 긴급 완화'; 
+      desc='생존 위기 감지 → 갈증 35% 감소 & 물 시작가 할인'; 
+      color='bg-emerald-600/80 ring-2 ring-emerald-400 animate-pulse';
+    } else if(avgHP > 80 && aliveRatio > 0.95){
+      thirst=thirst+2; waterMul=1.15;
+      mode='🔴 압박'; desc='전원 여유로움 → 갈증 +2'; color='bg-red-600/70';
+    }
+  }
+  return { thirst, waterMul, mode, desc, color, avgHP:Math.round(avgHP), aliveN:alive.length, total:arr.length };
+}
+
+function show(id){
+  ['screen-start','view-host','view-client'].forEach(s => {
+    const el = document.getElementById(s);
+    if(el) el.classList.toggle('hidden', s !== id);
+  });
+}
+function genCode(){ return String(Math.floor(1000 + Math.random() * 9000)); }
+
+/* 타이머 실시간 렌더링 */
+function tickTimer(){
+  if(!state || !state.currentItem) return;
+  const ci = state.currentItem;
+  const running = ci.status === 'RUNNING';
+  const remain = running ? Math.max(0, (ci.endsAt || 0) - now()) : 0;
+  const sec = running ? Math.ceil(remain / 1000) : 0;
+
+  const ring = document.getElementById('timer-ring');
+  const txt = document.getElementById('timer-txt');
+  if(ring && txt){
+    const R = 52, C = 2 * Math.PI * R;
+    const totalWin = ci.windowMs || 6000;
+    const frac = running ? Math.min(1, Math.max(0, remain / totalWin)) : 0;
+    ring.style.strokeDasharray = C;
+    ring.style.strokeDashoffset = C * (1 - frac);
+    ring.setAttribute('stroke', running && sec <= 1 ? '#ef4444' : '#facc15');
+    txt.textContent = running ? sec : '–';
+  }
+  const cTxt = document.getElementById('c-timer');
+  if(cTxt) cTxt.textContent = running ? sec + '초' : '대기';
+}
+
+async function startAsHost(){
+  try{
+    if(!db) return alert("Firebase 초기화에 실패했습니다. 설정을 확인하세요.");
+    role = 'host';
+    roomCode = genCode();
+    roomRef = db.ref('rooms/' + roomCode);
+
+    await roomRef.set({
+      status: 'WAITING',
+      round: 0,
+      stage: 1,
+      market: MARKET[1],
+      waterBase: STAGE_WATER_BASE[1],
+      lastWater: 0,
+      thirst: 0
+    });
+
+    attachListener();
+    show('view-host');
+
+    setInterval(() => {
+      tickTimer();
+      if (role !== 'host' || !state) return;
+      const ci = state.currentItem;
+      if (state.status === 'PLAYING' && ci && ci.status === 'RUNNING' && now() >= ci.endsAt) {
+        finalizeAuction();
+      }
+    }, 100);
+
+  }catch(e){
+    console.error(e);
+    alert("방 생성 실패: " + e.message);
+  }
+}
+
+async function joinAsClient(){
+  const code = document.getElementById('in-code').value.trim();
+  const name = document.getElementById('in-name').value.trim();
+  if(!/^\d{4}$/.test(code)) return alert('4자리 룸 코드를 입력하세요.');
+  if(!name) return alert('이름을 입력하세요.');
+
+  try{
+    const snap = await db.ref('rooms/' + code).get();
+    if(!snap.exists()) return alert('존재하지 않는 방입니다. 룸 코드를 다시 확인하세요.');
+    if(snap.val().status === 'ENDED') return alert('이미 종료된 게임입니다.');
+
+    const pRef = db.ref('rooms/' + code + '/players').push();
+    await pRef.set({ name, hp: INIT_HP, gold: INIT_GOLD, alive: true, inv: { water: INIT_WATER, diamond: 0 }, score: 0 });
+
+    role = 'client'; roomCode = code; myKey = pRef.key; roomRef = db.ref('rooms/' + code);
+    localStorage.setItem('player_' + code, JSON.stringify({ key: myKey, code }));
+    attachListener();
+    show('view-client');
+    setInterval(tickTimer, 100);
+  }catch(e){
+    console.error(e);
+    alert('참가 중 오류: ' + e.message);
+  }
+}
+
+function attachListener(){
+  roomRef.on('value', s => {
+    state = s.val();
+    if(!state) return;
+    role === 'host' ? renderHost() : renderClient();
+  });
+}
+
+function startGame(){
+  const table = { 1: 250, 2: 750, 3: 15 };
+  roomRef.child('marketTable').set(table).then(() => loadRound(1));
+}
+function nextRound(){ const nr = state.round + 1; if(nr > MAX_ROUND){ endGame(); return; } loadRound(nr); }
+
+function loadRound(round){
+  lastEventLotIndex = -2;
+  const plan = ROUND_PLAN[round - 1], stage = plan.stage, th = STAGE_THEME[stage];
+  Promise.all([roomRef.child('players').get(), roomRef.child('marketTable').get()]).then(([snap, mtSnap]) => {
+    const mt = mtSnap.val() || MARKET;
+    const pObj = {};
+    if(snap.exists()){
+      snap.forEach(c => { pObj[c.key] = c.val(); });
+    }
+
+    const rawThirst = (round === 1) ? 0 : BASE_THIRST[stage];
+    Object.keys(pObj).forEach(k => {
+      if(pObj[k].alive){
+        pObj[k].hp = Math.max(0, (pObj[k].hp || 0) - rawThirst);
+        if(pObj[k].hp <= 0) pObj[k].alive = false;
+      }
+    });
+
+    const adapt = computeAdaptive(pObj, stage, round);
+
+    if(adapt.thirst < rawThirst){
+      const refund = rawThirst - adapt.thirst;
+      Object.keys(pObj).forEach(k => {
+        if(pObj[k].alive) pObj[k].hp = Math.min(MAX_HP, (pObj[k].hp || 0) + refund);
+      });
+    }
+
+    let currentDiaMarket = mt[stage];
+    if(plan.caravan){
+      currentDiaMarket = 700 + Math.floor(Math.random() * 151);
+    }
+
+    const queue = (plan.lots || []).map(lotDef => {
+      const it = ITEM[lotDef.k];
+      const count = lotDef.c || 1;
+      const start = Math.max(5, Math.round(lotDef.s * (lotDef.k === 'water' ? adapt.waterMul : 1)));
+      const displayName = count > 1 ? `${it.name} ×${count}` : it.name;
+      const displayDesc = count > 1 ? `${count}병 묶음 · ${it.desc}` : it.desc;
+      return { key: lotDef.k, count, start, name: displayName, icon: it.icon, type: lotDef.k === 'diamond' ? 'luxury' : 'consume', desc: displayDesc };
+    });
+
+    const first = buildCurrentItem(queue[0], 0);
+
+    let evText = '', evIcon = '', evFlash = null;
+    let morningAllHp = false;
+    if(round > 1){
+      const ev = rollEventForStage(stage, 0.55, false);
+      if(ev){
+        if(ev.kind === 'all_hp' && ev.amt < 0) morningAllHp = true;
+        const r = applyEventToPlayers(ev, pObj);
+        evText = r.text; evIcon = ev.icon; evFlash = r.flash;
+      }
+    }
+
+    roomRef.child('history/d' + round).update({
+      round, stage, stageLabel: th.label, diaMarket: currentDiaMarket, morningAllHp
+    });
+
+    const guideText = plan.guide || STAGE_GUIDE[stage].txt;
+
+    const applyRoom = () => roomRef.update({
+      status: 'PLAYING', round, stage, market: currentDiaMarket, lastWater: 0, thirst: adapt.thirst,
+      flashEvent: null,
+      adapt: { mode: adapt.mode, desc: adapt.desc, color: adapt.color, avgHP: adapt.avgHP, aliveN: adapt.aliveN, total: adapt.total },
+      event: { round, narr: DAY_NARR[round], stageLabel: th.label, weather: th.weather, thirst: adapt.thirst,
+               caravan: !!plan.caravan, diaPrice: currentDiaMarket, guide: guideText, guideBg: STAGE_GUIDE[stage].bg,
+               icon: evIcon, rand: evText, evFlash: evFlash || null, dayId: Date.now(), id: Date.now() },
+      queue, qIndex: 0, currentItem: first
+    });
+
+    roomRef.child('players').set(pObj).then(applyRoom);
+  });
+}
+
+function buildCurrentItem(lot, idx){
+  return { key: lot.key, count: lot.count || 1, name: lot.name, icon: lot.icon, desc: lot.desc, type: lot.type,
+    startBid: lot.start, currentBid: lot.start, highestBidder: "", highestBidderKey: "",
+    endsAt: 0, windowMs: 6000, status: 'IDLE', lotIndex: idx };
+}
+
+/* ★ 시작은 여유롭게 6초 부여 */
+function startAuction(){
+  const ci = state.currentItem; if(!ci || ci.status !== 'IDLE') return; finalizing = false;
+  roomRef.child('currentItem').update({
+    status: 'RUNNING',
+    currentBid: ci.startBid,
+    highestBidder: "",
+    highestBidderKey: "",
+    endsAt: now() + 6000,
+    windowMs: 6000
+  });
+}
+function forcePass(){ const ci = state.currentItem; if(!ci) return; roomRef.child('currentItem').update({ status: 'PASSED', endsAt: 0 }); }
+
+function nextItem(){
+  const q = state.queue || []; let i = state.qIndex; if(i >= q.length - 1) return; i++;
+  roomRef.child('players').get().then(snap => {
+    const pObj = {};
+    if(snap.exists()) snap.forEach(c => { pObj[c.key] = c.val(); });
+
+    let flash = null, evPatch = null;
+    const isFirstDayFirstPass = (state.round === 1 && i === 1);
+
+    const canRoll = isFirstDayFirstPass || (i - lastEventLotIndex >= 2);
+    const prob = isFirstDayFirstPass ? 1.0 : 0.55;
+
+    const histInfo = (state.history && state.history['d' + state.round]) || {};
+    const hasAllHpHappened = !!histInfo.morningAllHp;
+
+    let ev = null;
+    if(canRoll){
+      ev = rollEventForStage(state.stage, prob, hasAllHpHappened);
+    }
+
+    if(ev){
+      lastEventLotIndex = i;
+      const r = applyEventToPlayers(ev, pObj);
+      evPatch = { icon: ev.icon, rand: r.text };
+      flash = r.flash;
+    }
+    const doIt = () => {
+      const roomUpd = { qIndex: i, currentItem: buildCurrentItem(q[i], i) };
+      if(evPatch){ roomUpd['event/icon'] = evPatch.icon; roomUpd['event/rand'] = evPatch.rand; roomUpd['event/id'] = Date.now(); }
+      if(flash){ flash.id = Date.now(); roomUpd['flashEvent'] = flash; }
+      roomRef.update(roomUpd);
+    };
+    roomRef.child('players').set(pObj).then(doIt);
+  });
+}
+
+function endGame(){
+  roomRef.child('marketTable').get().then(mtSnap => {
+    const finalDia = (mtSnap.val() || MARKET)[3];
+    roomRef.child('players').get().then(snap => {
+      const updates = {};
+      snap.forEach(c => {
+        const p = c.val(), inv = p.inv || {};
+        const diaVal = (inv.diamond || 0) * finalDia;
+        updates[c.key + '/score'] = (p.gold || 0) + diaVal;
+        updates[c.key + '/_dia'] = diaVal;
+      });
+      roomRef.child('players').update(updates).then(() => roomRef.child('status').set('ENDED'));
+    });
+  });
+}
+
+function resetGame(){
+  if(!confirm('게임을 리셋하시겠습니까? (참가자 유지, 자금·체력·기본물 1병 초기화)')) return;
+  lastFlashEvId = 0;
+  lastFlashId = 0;
+  lastEventLotIndex = -2;
+  roomRef.child('players').get().then(snap => {
+    const updates = {};
+    snap.forEach(c => { updates[c.key] = { name: c.val().name, hp: INIT_HP, gold: INIT_GOLD, alive: true, inv: { water: INIT_WATER, diamond: 0 }, score: 0 }; });
+    roomRef.update({ status: 'WAITING', round: 0, stage: 1, market: MARKET[1], waterBase: STAGE_WATER_BASE[1], lastWater: 0, thirst: 0, adapt: null, event: null, flashEvent: null, queue: null, qIndex: 0, currentItem: null, players: Object.keys(updates).length ? updates : null, history: null });
+  });
+}
+
+function finalizeAuction(){
+  const ci = state.currentItem; if(!ci || ci.status !== 'RUNNING' || finalizing) return; finalizing = true;
+  roomRef.child('currentItem/status').set('SETTLING').then(() => {
+    if(ci.highestBidderKey){
+      const winPrice = Number(ci.currentBid) || 0;
+      const count = Number(ci.count) || 1;
+      const unitPrice = Math.round(winPrice / count);
+
+      roomRef.child('players/' + ci.highestBidderKey).transaction(p => {
+        if(!p) return p;
+        p.gold = (p.gold || 0) - winPrice;
+        p.inv = p.inv || {};
+        p.inv[ci.key] = (p.inv[ci.key] || 0) + count;
+        return p;
+      }).then(() => {
+        const done = () => roomRef.child('currentItem/status').set('SOLD').then(() => finalizing = false);
+        if(ci.key === 'water'){
+          roomRef.child('lastWater').set(winPrice);
+          roomRef.child('history/d' + state.round + '/waterBids').push(unitPrice).then(done);
+        } else if(ci.key === 'diamond'){
+          roomRef.child('history/d' + state.round + '/diaBids').push(unitPrice).then(done);
+        } else {
+          done();
+        }
+      });
+    } else {
+      roomRef.child('currentItem/status').set('PASSED').then(() => finalizing = false);
+    }
+  });
+}
+
+/* ★ 입찰 시: 스피디하고 쫄깃한 3.0초 갱신 (지루함 100% 해소) */
+function placeBid(inc){
+  const ci = state.currentItem; if(!ci || ci.status !== 'RUNNING') return;
+  const me = state.players && state.players[myKey]; if(!me || !me.alive || (me.hp || 0) <= 0) return;
+  if(ci.highestBidderKey === myKey) return;
+
+  roomRef.child('currentItem').transaction(cur => {
+    if(!cur || cur.status !== 'RUNNING') return;
+    if(cur.highestBidderKey === myKey) return;
+    const nb = Number(cur.currentBid || cur.startBid || 0) + inc;
+    if(nb > (me.gold || 0)) return;
+
+    cur.currentBid = nb;
+    cur.highestBidder = me.name;
+    cur.highestBidderKey = myKey;
+    cur.endsAt = now() + 3000; // 3.0초 긴장감 넘치는 카운트다운
+    cur.windowMs = 3000;
+    return cur;
+  });
+}
+
+function consumeWater(){
+  const me = state.players && state.players[myKey]; if(!me || !me.alive || (me.hp || 0) <= 0) return;
+  roomRef.child('players/' + myKey).transaction(p => {
+    if(!p || !p.alive) return p; p.inv = p.inv || {};
+    if(!p.inv.water || p.inv.water <= 0) return;
+    if((p.hp || 0) >= MAX_HP) return;
+    p.inv.water -= 1; p.hp = Math.min(MAX_HP, (p.hp || 0) + WATER_HEAL);
+    return p;
+  });
+}
+
+function sellDiamond(){
+  const me = state.players && state.players[myKey]; if(!me || !me.alive || (me.hp || 0) <= 0) return;
+  const price = Number(state.market) || 0;
+  roomRef.child('players/' + myKey).transaction(p => {
+    if(!p || !p.alive) return p; p.inv = p.inv || {};
+    if(!p.inv.diamond || p.inv.diamond <= 0) return;
+    p.inv.diamond -= 1; p.gold = (p.gold || 0) + price;
+    return p;
+  });
+}
+
+function maybeDayFlash(){
+  const ev = state && state.event; if(!ev || !ev.dayId) return;
+  if(ev.dayId === lastFlashId) return; lastFlashId = ev.dayId;
+  const f = ev.evFlash; let evLine = '';
+  if(f){
+    const mine = f.all || (myKey && f.targetKey === myKey);
+    const who = f.all ? '전원' : f.name;
+    const color = f.dir === '+' ? 'text-emerald-300' : 'text-red-400';
+    evLine = (role === 'client' && mine)
+      ? `<div class="text-3xl md:text-5xl font-black ${color} mt-4 pop">${f.icon} ${f.title}<br>나 ${f.dir}${f.mag}${f.unit}!</div>`
+      : `<div class="text-2xl md:text-4xl font-black ${color} mt-4">${f.icon} ${f.title} · ${who} ${f.dir}${f.mag}${f.unit}</div>`;
+  }
+  const wrap = document.createElement('div'); wrap.id = 'dayflash';
+  wrap.innerHTML = `<div class="df-hit text-center px-6">
+     <div class="text-7xl md:text-9xl mb-2">${ev.weather || '☀️'}</div>
+     <div class="text-3xl md:text-6xl font-black">DAY ${ev.round} · ${ev.stageLabel || ''}</div>
+     ${ev.thirst ? `<div class="text-4xl md:text-7xl font-black text-red-400 mt-4">🥵 갈증! HP −${ev.thirst}</div>` : `<div class="text-2xl md:text-4xl font-bold text-emerald-300 mt-4">🌴 여정 시작 (기본 물 1병 지급)</div>`}
+     ${ev.caravan ? `<div class="text-2xl md:text-5xl font-black text-amber-300 mt-4 pop">🐪 대상 도착! 💎 ${ev.diaPrice}G 폭등!</div>` : ''}
+     ${evLine}
+  </div>`;
+  document.body.appendChild(wrap);
+  if(ev.thirst){ const v = document.createElement('div'); v.className = 'redveil on'; document.body.appendChild(v); setTimeout(() => v.remove(), 1300); }
+  setTimeout(() => { if(wrap.parentNode) wrap.remove(); }, 2000);
+}
+
+function maybeEventFlash(){
+  const f = state && state.flashEvent; if(!f || !f.id) return;
+  if(f.id === lastFlashEvId) return; lastFlashEvId = f.id;
+  const mine = f.all || (myKey && f.targetKey === myKey);
+  const who = f.all ? '전원' : f.name;
+  const up = f.dir === '+', color = up ? 'text-emerald-300' : 'text-red-400';
+  let big;
+  if(role === 'client' && mine)
+    big = `<div class="text-8xl mb-3">${f.icon}</div><div class="text-4xl font-black">${f.title}</div><div class="text-6xl font-black ${color} mt-4">나 ${f.dir}${f.mag}${f.unit}!</div>`;
+  else if(role === 'client')
+    big = `<div class="text-7xl mb-3">${f.icon}</div><div class="text-3xl font-black">${f.title}</div><div class="text-2xl font-bold ${color} mt-3">${who} ${f.dir}${f.mag}${f.unit}</div>`;
+  else
+    big = `<div class="text-8xl md:text-9xl mb-3">${f.icon}</div><div class="text-5xl md:text-6xl font-black">${f.title}</div><div class="text-3xl md:text-5xl font-bold ${color} mt-4">${who} ${f.dir}${f.mag}${f.unit}</div><div class="text-xl opacity-80 mt-2">${f.sub || ''}</div>`;
+  const wrap = document.createElement('div'); wrap.id = 'dayflash';
+  wrap.innerHTML = `<div class="df-hit text-center px-6">${big}</div>`;
+  document.body.appendChild(wrap);
+  const v = document.createElement('div'); v.className = (up ? 'greenveil' : 'redveil') + ' on'; document.body.appendChild(v); setTimeout(() => v.remove(), 1300);
+  setTimeout(() => { if(wrap.parentNode) wrap.remove(); }, 1800);
+}
+
+function renderHost(){
+  const host = document.getElementById('view-host');
+  const players = state.players ? Object.entries(state.players) : [];
+  if(state.status === 'WAITING'){ host.innerHTML = hostWaitingHTML(players); return; }
+  if(state.status === 'ENDED'){ host.innerHTML = resultHTML(players, true); drawResultChart(); return; }
+  maybeDayFlash();
+  maybeEventFlash();
+
+  const th = STAGE_THEME[state.stage], ci = state.currentItem || {}, q = state.queue || [];
+  const dia = state.market || MARKET[1];
+  const diaTrend = state.stage === 2 ? '<span class="text-emerald-300 font-black">▲ 폭등!</span>' : state.stage === 3 ? '<span class="text-red-400 font-black">▼ 폭락</span>' : '';
+  const aliveN = players.filter(([k,p]) => p.alive).length;
+  const ev = state.event || {}, ad = state.adapt || {};
+  const evNew = ev.id && ev.id !== lastEvId; if(ev.id) lastEvId = ev.id;
+  const soldKey = ci.status === 'SOLD' ? (state.round + '-' + state.qIndex) : '';
+  const soldNew = soldKey && soldKey !== lastSoldKey; if(soldKey) lastSoldKey = soldKey;
+
+  host.innerHTML = `
+  <div class="min-h-screen bg-gradient-to-br ${th.grad} p-4 md:p-6">
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-2">
+      <div class="bg-black/40 rounded-2xl px-6 py-3 text-center">
+        <div class="text-xs opacity-80">룸 코드</div>
+        <div class="text-5xl md:text-6xl font-black tracking-[0.3em]">${roomCode}</div>
+      </div>
+      <div class="text-center">
+        <div class="text-4xl md:text-6xl font-black">${th.weather} DAY ${state.round} <span class="text-2xl opacity-80">/ ${MAX_ROUND}</span></div>
+        <div class="text-xl font-black opacity-90">${th.label}</div>
+      </div>
+      <div class="bg-black/40 rounded-2xl px-5 py-3 text-center">
+        <div class="text-xs opacity-80">생존자</div>
+        <div class="text-3xl font-black">${aliveN}<span class="text-lg opacity-70">/${players.length}</span></div>
+      </div>
+    </div>
+
+    <div class="${ev.guideBg || 'bg-black/50'} rounded-2xl px-5 py-3 mb-2 text-center">
+      <div class="text-xl md:text-2xl font-black">${ev.guide || ''}</div>
+    </div>
+
+    <div class="flex flex-wrap gap-2 mb-2">
+      <div class="bg-black/40 rounded-xl px-4 py-2 font-bold ${state.stage === 2 ? 'ring-2 ring-amber-300 flash' : ''}">💎 다이아 시세 <span class="text-yellow-300 text-2xl">${dia}G</span> ${diaTrend}</div>
+      <div class="${state.thirst > 0 ? 'bg-red-700/70' : 'bg-emerald-700/70'} rounded-xl px-4 py-2 font-bold">${state.thirst > 0 ? `🥵 오늘 갈증 −${state.thirst}` : '🌴 오늘 갈증 없음'}</div>
+      ${ad.mode && ad.mode !== '표준' ? `<div class="${ad.color || 'bg-slate-600/70'} rounded-xl px-4 py-2 font-bold">⚙️ ${ad.mode} <span class="text-xs opacity-80">(${ad.desc || ''})</span></div>` : ''}
+    </div>
+    ${ev.rand ? `<div class="bg-fuchsia-800/70 rounded-xl px-4 py-2 mb-2 font-bold ${evNew ? 'pop' : ''}">${ev.icon || ''} ${ev.rand}</div>` : ''}
+
+    ${ci.status === 'SOLD' ? `<div class="mb-3 bg-emerald-400 text-black rounded-2xl py-6 text-center ${soldNew ? 'pop' : ''}">
+      <div class="text-5xl md:text-7xl font-black">🎉 ${ci.highestBidder} 낙찰!</div>
+      <div class="text-3xl md:text-4xl font-bold mt-2">${ci.icon} ${ci.name} · ${(ci.currentBid || 0).toLocaleString()}G</div>
+    </div>` : ''}
+    ${ci.status === 'PASSED' ? `<div class="mb-3 bg-slate-700 rounded-2xl py-4 text-center text-3xl font-black">💤 유찰 (아무도 입찰하지 않음)</div>` : ''}
+
+    <div class="grid md:grid-cols-3 gap-4 mb-3">
+      <div class="md:col-span-2 bg-black/40 rounded-3xl p-6 flex items-center gap-6 relative">
+        <div class="absolute top-4 right-4 bg-yellow-400 text-black rounded-2xl px-5 py-2 text-center shadow-lg">
+          <div class="text-xs font-bold">오늘 경매 진행</div>
+          <div class="text-3xl font-black leading-none">${state.qIndex + 1} / ${q.length}</div>
+        </div>
+        <div class="text-8xl md:text-9xl ${ci.status === 'RUNNING' ? 'pulse-ring' : ''}">${ci.icon || '❓'}</div>
+        <div class="flex-1">
+          <div class="text-3xl md:text-4xl font-black mb-1">${ci.name || '-'}</div>
+          <div class="opacity-90 mb-3 text-lg">${ci.desc || ''}</div>
+          <div class="bg-black/40 rounded-2xl p-4">
+            <div class="text-sm opacity-80">현재 최고 입찰가</div>
+            <div class="text-5xl md:text-6xl font-black text-yellow-300">${(ci.currentBid || 0).toLocaleString()}G</div>
+            <div class="text-2xl font-black mt-1">${ci.highestBidder ? '🙋 ' + ci.highestBidder : '<span class="opacity-60 text-lg">입찰자 없음</span>'}</div>
+          </div>
+        </div>
+      </div>
+      <div class="bg-black/40 rounded-3xl p-6 flex flex-col items-center justify-center">
+        <svg width="150" height="150" viewBox="0 0 130 130" class="-rotate-90">
+          <circle cx="65" cy="65" r="52" fill="none" stroke="rgba(255,255,255,.15)" stroke-width="12"/>
+          <circle id="timer-ring" cx="65" cy="65" r="52" fill="none" stroke="#facc15" stroke-width="12" stroke-linecap="round" />
+        </svg>
+        <div id="timer-txt" class="text-5xl font-black -mt-28 mb-24">–</div>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-1.5 mb-3">
+      ${players.map(([k,p]) => playerCardHTML(p, k === ci.highestBidderKey)).join('')}
+    </div>
+
+    <div class="flex flex-wrap gap-2 justify-center">
+      ${hostControlsHTML(ci, q)}
+      <button onclick="resetGame()" class="px-5 py-3 rounded-xl bg-slate-800/80 hover:bg-slate-700 font-bold cursor-pointer">🔄 리셋</button>
+    </div>
+  </div>`;
+  tickTimer();
+}
+
+function hostControlsHTML(ci, q){
+  const last = state.qIndex >= (q.length - 1);
+  if(ci.status === 'IDLE') return `<button onclick="startAuction()" class="px-8 py-3 rounded-xl bg-green-500 hover:bg-green-400 font-black text-lg cursor-pointer">▶ 경매 시작</button>`;
+  if(ci.status === 'RUNNING') return `<button onclick="forcePass()" class="px-8 py-3 rounded-xl bg-red-500 hover:bg-red-400 font-black text-lg cursor-pointer">⛔ 강제 유찰</button>`;
+  if(!last) return `<button onclick="nextItem()" class="px-8 py-3 rounded-xl bg-blue-500 hover:bg-blue-400 font-black text-lg cursor-pointer">⏭ 다음 경매 (${state.qIndex + 2}/${q.length})</button>`;
+  if(state.round < MAX_ROUND) return `<button onclick="nextRound()" class="px-8 py-3 rounded-xl bg-purple-500 hover:bg-purple-400 font-black text-lg cursor-pointer">🌅 다음 날 (DAY ${state.round + 1})</button>`;
+  return `<button onclick="endGame()" class="px-8 py-3 rounded-xl bg-yellow-500 text-black hover:bg-yellow-400 font-black text-lg cursor-pointer">🏁 게임 종료 & 결과</button>`;
+}
+function invTags(inv){ inv = inv || {}; const t = []; if(inv.water) t.push('💧' + inv.water); if(inv.diamond) t.push('💎' + inv.diamond); return t.join(' ') || '—'; }
+function playerCardHTML(p, isTop){
+  const dead = !p.alive || (p.hp || 0) <= 0, hpPct = Math.max(0, Math.min(100, p.hp || 0));
+  return `
+  <div class="rounded-lg p-2 ${dead ? 'bg-black/60 opacity-60' : 'bg-black/40'} ${isTop ? 'ring-2 ring-yellow-300' : ''}">
+    <div class="flex justify-between items-center mb-1 text-sm">
+      <span class="font-bold truncate">${dead ? '💀' : ''}${p.name}</span>
+      <span class="text-yellow-300 font-bold text-xs">${(p.gold || 0).toLocaleString()}</span>
+    </div>
+    <div class="w-full h-2.5 bg-slate-700 rounded-full overflow-hidden mb-1">
+      <div class="hpbar h-full ${hpPct > 50 ? 'bg-green-400' : hpPct > 20 ? 'bg-yellow-400' : 'bg-red-500'}" style="width:${hpPct}%"></div>
+    </div>
+    <div class="flex justify-between text-[11px]"><span>❤️${Math.max(0, p.hp || 0)}</span><span>${invTags(p.inv)}</span></div>
+  </div>`;
+}
+function hostWaitingHTML(players){
+  return `
+  <div class="min-h-screen bg-gradient-to-br from-slate-800 to-slate-900 p-6 flex flex-col items-center justify-center">
+    <h1 class="text-3xl font-black mb-2">참가자를 기다리는 중...</h1>
+    <p class="text-slate-400 mb-6">스마트폰으로 룸 코드를 입력해 접속하세요 (기본 식수 1병 지급)</p>
+    <div class="text-center mb-8">
+      <div class="text-sm text-slate-400 mb-1">룸 코드</div>
+      <div class="text-8xl md:text-9xl font-black tracking-[0.3em] text-cyan-300">${roomCode}</div>
+    </div>
+    <div class="w-full max-w-4xl grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2 mb-6">
+      ${players.length ? players.map(([k,p]) => `<div class="bg-slate-700 rounded-xl px-2 py-3 text-center font-bold truncate">${p.name}</div>`).join('') : '<div class="col-span-6 text-center text-slate-500 py-8">아직 참가자가 없습니다</div>'}
+    </div>
+    <div class="text-slate-300 mb-4">현재 <b class="text-cyan-300 text-xl">${players.length}</b>명 참가</div>
+    <button onclick="startGame()" ${players.length ? '' : 'disabled'} class="px-10 py-4 rounded-2xl ${players.length ? 'bg-green-500 hover:bg-green-400 cursor-pointer' : 'bg-slate-600 cursor-not-allowed'} font-black text-xl">🚀 게임 시작 (DAY 1)</button>
+  </div>`;
+}
+
+function renderClient(){
+  const view = document.getElementById('view-client');
+  const me = state.players && state.players[myKey];
+  if(!me){ view.innerHTML = '<div class="p-8 text-center">연결 정보를 찾을 수 없습니다.</div>'; return; }
+  if(state.status === 'ENDED'){ view.innerHTML = clientResultHTML(me); return; }
+  if(state.status === 'WAITING'){
+    view.innerHTML = `<div class="min-h-screen flex flex-col items-center justify-center p-8 text-center bg-gradient-to-b from-slate-800 to-slate-900">
+      <div class="text-6xl mb-4">⏳</div><h1 class="text-2xl font-black mb-2">${me.name}</h1>
+      <p class="text-slate-400">선생님이 게임을 시작하길 기다리는 중...</p>
+      <div class="mt-6 bg-slate-800 rounded-2xl px-6 py-4"><div class="text-sm text-slate-400">내 시작 자금 / 가방</div>
+      <div class="text-xl font-bold">💰 ${me.gold}G · ❤️ ${me.hp}HP · 💧 1병</div></div></div>`; return;
+  }
+  if(!me.alive || (me.hp || 0) <= 0){ view.innerHTML = clientDeadHTML(me); return; }
+  maybeDayFlash();
+  maybeEventFlash();
+
+  const th = STAGE_THEME[state.stage], ci = state.currentItem || {}, dia = state.market || MARKET[1], q = state.queue || [];
+  const isTop = ci.highestBidderKey === myKey, running = ci.status === 'RUNNING', cur = ci.currentBid || 0;
+  const inv = me.inv || {}; const lowHp = (me.hp || 0) <= 40; const ev = state.event || {};
+  const canSellNow = state.stage === 2;
+
+  const bid = (inc) => { const need = cur + inc, ok = running && !isTop && need <= me.gold;
+    return `<button onclick="placeBid(${inc})" ${ok ? '' : 'disabled'} class="bidbtn flex-1 py-5 rounded-2xl font-black text-2xl ${ok ? 'bg-cyan-500 active:bg-cyan-600 cursor-pointer' : 'bg-slate-700 text-slate-500'}">+${inc}</button>`; };
+
+  view.innerHTML = `
+  <div class="min-h-screen flex flex-col bg-gradient-to-b ${th.grad}">
+    <div class="p-3 bg-black/30">
+      <div class="flex justify-between items-center mb-1">
+        <span class="font-black">${me.name} <span class="opacity-70 text-sm">· ${th.weather} DAY ${state.round}</span></span>
+        <span class="text-yellow-300 font-black">💰 ${(me.gold || 0).toLocaleString()}G</span>
+      </div>
+      <div class="w-full h-5 bg-slate-800 rounded-full overflow-hidden ${lowHp ? 'hpflash' : ''}">
+        <div class="hpbar h-full ${me.hp > 50 ? 'bg-green-400' : me.hp > 20 ? 'bg-yellow-400' : 'bg-red-500'}" style="width:${Math.max(0, me.hp)}%"></div>
+      </div>
+      <div class="text-right text-sm mt-1">❤️ ${me.hp}/${MAX_HP} HP</div>
+    </div>
+
+    <div class="${ev.guideBg || 'bg-black/40'} mx-3 mt-2 rounded-xl px-3 py-2 text-center text-sm font-bold">${ev.guide || ''}</div>
+    ${ev.rand ? `<div class="mx-3 mt-2 bg-fuchsia-800/60 rounded-xl px-3 py-2 text-sm text-center">${ev.icon || ''} ${ev.rand}</div>` : ''}
+    ${canSellNow && inv.diamond > 0 ? `<div class="mx-3 mt-2 bg-amber-400 text-black rounded-xl px-3 py-2 text-center font-black pop">🐪 대상 도착! 아래 [💎 팔기]를 눌러 ${dia}G로 환전하세요!</div>` : ''}
+
+    <div class="flex-1 p-4 flex flex-col items-center justify-center text-center">
+      <div class="text-8xl mb-1 ${running ? 'pulse-ring' : ''}">${ci.icon || '❓'}</div>
+      <div class="text-3xl font-black">${ci.name || '준비 중'}</div>
+      <div class="text-sm opacity-90 my-2 px-4">${ci.desc || ''}</div>
+      <div class="w-full bg-black/40 rounded-2xl p-4 mb-2">
+        <div class="text-sm opacity-80">현재 최고 입찰가</div>
+        <div class="text-5xl font-black text-yellow-300">${cur.toLocaleString()}G</div>
+        <div class="mt-1 font-bold">${ci.highestBidder ? '🙋 ' + ci.highestBidder : '<span class="opacity-60">입찰자 없음</span>'}</div>
+      </div>
+      <div class="text-lg font-bold">⏱ <span id="c-timer">대기</span></div>
+      ${isTop ? `<div class="mt-2 px-4 py-1 rounded-xl bg-green-500 font-black animate-pulse">🔥 현재 최고 입찰 중!</div>` : ''}
+      ${ci.status === 'SOLD' ? (isTop ? `<div class="mt-2 text-emerald-100 font-black text-xl">🎉 낙찰 성공!</div>` : `<div class="mt-2 opacity-90 text-sm">🔨 ${ci.highestBidder || '유찰'} 낙찰</div>`) : ''}
+      ${!running && ci.status !== 'SOLD' && ci.status !== 'PASSED' ? `<div class="mt-2 opacity-80 text-xs">경매 시작을 기다리세요</div>` : ''}
+    </div>
+
+    <div class="px-3 flex gap-2 mb-2">${bid(10)}${bid(50)}${bid(100)}</div>
+
+    <div class="bg-black/40 p-3 grid grid-cols-2 gap-2 text-sm">
+      <button onclick="consumeWater()" ${inv.water > 0 && me.hp < MAX_HP ? '' : 'disabled'} class="actbtn py-4 rounded-xl font-bold ${inv.water > 0 && me.hp < MAX_HP ? 'bg-sky-500 active:bg-sky-600 cursor-pointer' : 'bg-slate-700 text-slate-500'}">💧 물 마시기 (${inv.water || 0}) +${WATER_HEAL}</button>
+      <button onclick="sellDiamond()" ${inv.diamond > 0 ? '' : 'disabled'} class="actbtn py-4 rounded-xl font-bold ${inv.diamond > 0 ? (canSellNow ? 'bg-amber-400 active:bg-amber-500 text-black flash cursor-pointer' : 'bg-amber-600 active:bg-amber-700 text-black cursor-pointer') : 'bg-slate-700 text-slate-500'}">💎 팔기 (${inv.diamond || 0}) → ${dia}G</button>
+    </div>
+  </div>`;
+  tickTimer();
+}
+
+function clientDeadHTML(me){
+  return `<div class="min-h-screen flex flex-col items-center justify-center p-8 text-center bg-gradient-to-b from-slate-900 to-black">
+    <div class="text-8xl mb-4">💀</div><h1 class="text-3xl font-black mb-2 text-red-400">탈락하셨습니다</h1>
+    <p class="text-slate-400 mb-1">생존 실패 (HP 0)</p>
+    <p class="text-slate-500 text-sm">물을 확보·소비하지 못해 사막에서 쓰러졌습니다.</p>
+    <div class="mt-6 bg-slate-800 rounded-2xl px-6 py-4 opacity-70"><div class="font-bold">${me.name}</div>
+    <div class="text-sm mt-1">최종 보유 💰 ${me.gold}G · 💎 ${(me.inv && me.inv.diamond) || 0}개</div></div>
+    <p class="mt-6 text-slate-500 text-sm">순위에서 제외됩니다. 결과를 기다려 주세요...</p></div>`;
+}
+
+function rankPlayers(players){ return players.map(([k,p]) => ({ ...p, _k: k })).sort((a,b) => (b.alive - a.alive) || (b.score - a.score)); }
+
+function resultHTML(players, isHost){
+  const finalDia = (state.marketTable && state.marketTable[3]) || MARKET[3];
+  const ranked = rankPlayers(players), medal = ['🥇','🥈','🥉'];
+  const survivors = ranked.filter(p => p.alive && p.hp > 0);
+  return `
+  <div class="min-h-screen bg-gradient-to-b from-indigo-900 to-slate-900 p-6 overflow-y-auto">
+    <h1 class="text-4xl font-black text-center mb-1">🏆 최종 결과</h1>
+    <p class="text-center text-slate-400 mb-6">생존자 중 <b class="text-yellow-300">보유 자산(현금+다이아)</b>이 가장 많은 사람이 우승 · 탈락자는 순위 제외</p>
+
+    <div class="max-w-3xl mx-auto space-y-2 mb-8">
+      ${ranked.map((p,i) => { const rank = survivors.indexOf(p); return `
+        <div class="flex items-center gap-3 rounded-2xl p-4 ${rank === 0 && p.alive ? 'bg-yellow-500/20 ring-2 ring-yellow-400':'bg-black/40'} ${!p.alive ? 'opacity-60':''}">
+          <div class="text-3xl w-12 text-center">${p.alive ? (medal[rank] || (rank + 1)) : '💀'}</div>
+          <div class="flex-1"><div class="text-xl font-black">${p.name} ${!p.alive ? '<span class="text-red-400 text-sm">(탈락·순위제외)</span>':''}</div>
+            <div class="text-xs text-slate-300">💰 현금 ${p.gold} · 💎 다이아 잔존가치 ${p._dia || 0} (${(p.inv && p.inv.diamond) || 0}개×${finalDia}G)</div></div>
+          <div class="text-2xl font-black text-yellow-300">${p.alive ? (p.score || 0).toLocaleString() : '-'}</div>
+        </div>`; }).join('')}
+    </div>
+
+    <!-- Day별 실제 낙찰가 그래프 -->
+    <div class="max-w-3xl mx-auto bg-black/50 rounded-2xl p-6 mb-8 border border-slate-700">
+      <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
+        <h2 class="text-2xl font-black">📈 10일간의 실제 단위당 낙찰가 추이</h2>
+        <span class="px-3 py-1 bg-purple-600/80 rounded-full text-xs font-bold">1개/1병 기준 실제 체결가</span>
+      </div>
+
+      <div class="grid grid-cols-3 gap-2 my-3 text-center text-xs font-black">
+        <div class="p-2 rounded-xl bg-emerald-950/80 border border-emerald-500/50 text-emerald-300">
+          🌴 1구간: 오아시스 & 기습폭풍<br><span class="text-[10px] font-normal opacity-80">💎 다이아 고가 / 💧 물의 가치 각인</span>
+        </div>
+        <div class="p-2 rounded-xl bg-amber-950/80 border border-amber-500/50 text-amber-300">
+          🐪 2구간: 가뭄·대상 (D3, D5, D8)<br><span class="text-[10px] font-normal opacity-80">💎 750G 매각 환전 / 💧 물값 상승</span>
+        </div>
+        <div class="p-2 rounded-xl bg-red-950/80 border border-red-500/50 text-red-300">
+          🌪️ 3구간: 본격 모래폭풍 (D6, D9~D10)<br><span class="text-[10px] font-normal opacity-80">💧 물값 폭등 / 💎 다이아 폭락</span>
+        </div>
+      </div>
+
+      <div class="w-full h-72 md:h-84 relative">
+        <canvas id="chart-market"></canvas>
+      </div>
+    </div>
+
+    <div class="max-w-3xl mx-auto bg-black/40 rounded-2xl p-6 border border-slate-700">
+      <h2 class="text-xl font-black mb-4">🎓 수업 마무리 · 핵심 발문</h2>
+      <ol class="space-y-4 list-decimal list-inside text-slate-200">
+        <li><b>오아시스와 모래폭풍, 물 낙찰가는 왜 이렇게 역전되었을까?</b>
+          <p class="text-sm text-slate-400 mt-1 ml-5">→ 한계효용의 차이. 물이 풍족할 때는 추가 1병의 효용이 0에 가깝지만, 목숨이 위태로울 때는 추가 1병의 효용이 무한대에 가깝다.</p></li>
+        <li><b>사막에서 다이아몬드 낙찰가가 결국 폭락한 이유는?</b>
+          <p class="text-sm text-slate-400 mt-1 ml-5">→ 상대적 희소성과 생존 효용. 아무리 절대량이 적고 귀한 보석이라도, 생존할 수 없는 환경에서는 교환가치를 상실한다.</p></li>
+        <li><b>우승자는 다이아를 '언제' 팔았을까? 진 사람은 무엇을 놓쳤을까?</b>
+          <p class="text-sm text-slate-400 mt-1 ml-5">→ 기회비용과 리스크 관리. 대상이 왔을 때 최고가로 현금화하고, 생존(물)을 확보한 상태에서 이윤을 남겨야 진정한 승자다.</p></li>
+      </ol>
+    </div>
+    ${isHost ? `<div class="text-center mt-6"><button onclick="resetGame()" class="px-8 py-3 rounded-xl bg-slate-700 hover:bg-slate-600 font-bold cursor-pointer">🔄 새 게임</button></div>` : ''}
+  </div>`;
+}
+
+function drawResultChart(){
+  setTimeout(() => {
+    const cvs = document.getElementById('chart-market');
+    if(!cvs) return;
+    if(chartInstance) chartInstance.destroy(); // 차트 중복 생성 방어
+
+    const ctx = cvs.getContext('2d');
+    const hist = state.history || {};
+    const labels = [];
+    const waterData = [];
+    const diaData = [];
+
+    for(let d = 1; d <= MAX_ROUND; d++){
+      const info = hist['d' + d] || {};
+      const stageName = STAGE_THEME[info.stage || 1].label;
+      labels.push(`Day ${d} (${stageName})`);
+
+      let wVal = null;
+      if(info.waterBids){
+        const bids = Object.values(info.waterBids).map(Number).filter(n => !isNaN(n));
+        if(bids.length) wVal = Math.round(bids.reduce((a,b) => a + b, 0) / bids.length);
+      }
+      waterData.push(wVal);
+
+      let dVal = null;
+      if(info.diaBids){
+        const bids = Object.values(info.diaBids).map(Number).filter(n => !isNaN(n));
+        if(bids.length) dVal = Math.round(bids.reduce((a,b) => a + b, 0) / bids.length);
+      }
+      diaData.push(dVal);
+    }
+
+    chartInstance = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: [
+          {
+            label: '💧 식수 1병당 실제 평균 낙찰가 (G)',
+            data: waterData,
+            borderColor: '#38bdf8',
+            backgroundColor: 'rgba(56, 189, 248, 0.25)',
+            borderWidth: 3.5,
+            fill: false,
+            tension: 0.2,
+            spanGaps: true,
+            pointRadius: 6,
+            pointHoverRadius: 8,
+            pointBackgroundColor: '#38bdf8',
+            yAxisID: 'y'
+          },
+          {
+            label: '💎 다이아 1개당 실제 평균 낙찰가 (G)',
+            data: diaData,
+            borderColor: '#facc15',
+            backgroundColor: 'rgba(250, 204, 21, 0.25)',
+            borderWidth: 3.5,
+            fill: false,
+            tension: 0.2,
+            spanGaps: true,
+            pointRadius: 6,
+            pointHoverRadius: 8,
+            pointBackgroundColor: '#facc15',
+            yAxisID: 'y'
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: {
+          mode: 'index',
+          intersect: false,
+        },
+        plugins: {
+          legend: {
+            position: 'top',
+            labels: { color: '#ffffff', font: { size: 13, weight: 'bold' }, padding: 15 }
+          },
+          tooltip: {
+            backgroundColor: 'rgba(15, 23, 42, 0.95)',
+            titleFont: { size: 14, weight: 'bold' },
+            bodyFont: { size: 13 },
+            padding: 12,
+            borderColor: '#475569',
+            borderWidth: 1,
+            callbacks: {
+              label: function(context) {
+                const val = context.parsed.y;
+                return context.dataset.label + ': ' + (val !== null ? val + 'G' : '경매 없음/유찰');
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            ticks: { color: '#cbd5e1', font: { weight: 'bold' } },
+            grid: { color: 'rgba(255,255,255,0.08)' }
+          },
+          y: {
+            title: { display: true, text: '개당/병당 낙찰가 (G)', color: '#94a3b8' },
+            ticks: { color: '#cbd5e1' },
+            grid: { color: 'rgba(255,255,255,0.08)' },
+            beginAtZero: true
+          }
+        }
+      }
+    });
+  }, 100);
+}
+
+function clientResultHTML(me){
+  const ranked = rankPlayers(Object.entries(state.players));
+  const survivors = ranked.filter(p => p.alive && p.hp > 0);
+  const myRank = survivors.findIndex(p => p._k === myKey) + 1;
+  return `<div class="min-h-screen bg-gradient-to-b from-indigo-900 to-slate-900 p-6 text-center overflow-y-auto">
+    <div class="text-6xl mb-3">${me.alive ? (myRank === 1 ? '🥇' : '🎉') : '💀'}</div>
+    <h1 class="text-2xl font-black mb-1">${me.name}</h1>
+    <div class="text-lg mb-4">${me.alive ? `최종 <b class="text-yellow-300">${myRank}위</b> / 생존자 ${survivors.length}명` : '생존 실패 (순위 제외)'}</div>
+    <div class="bg-black/40 rounded-2xl p-5 max-w-sm mx-auto mb-6"><div class="text-4xl font-black text-yellow-300">${me.alive ? (me.score || 0).toLocaleString() + '점' : '탈락'}</div>
+    <div class="text-xs text-slate-300 mt-2">💰 ${me.gold} · 💎 ${(me.inv && me.inv.diamond) || 0}개</div></div>
+    <p class="text-slate-400 text-sm">선생님 화면에서 전체 순위와<br/>학습 정리를 확인하세요!</p></div>`;
+}
+</script>
+</body>
+</html>
